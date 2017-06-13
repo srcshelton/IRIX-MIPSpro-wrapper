@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 #
-# IRIX-MIPSpro-wrapper; Copyright 2008, 2009, 2010 Stuart Shelton
+# IRIX-MIPSpro-wrapper; Copyright 2008, 2009, 2010, 2017 Stuart Shelton
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of version 2 of the GNU General Public License as
@@ -27,15 +27,20 @@
 # /bin/uname, /sbin/hinv, readlink, touch, tr, grep, cut, GNU sed,
 # sort, head, basename.
 #
-# Version 20100713.2
+# Version 20100713.3
 #
 # Changes since:
+# 20100702.2	Fix shellcheck warnings
 # 20100702.1	Try to handle more GNU -M* arguments
 # 20100629.1	Fix "-l" handling in pass3 (next argument shouldn't
 #				be passed regardless, as pass1 should have squashed
 #				parameters)
 # 20100525.1	Handle GNU -fopenmp directive
 #
+
+# This script has been checked with shellcheck.
+# N.B. Due to the use of extended globs (shopt -s extglob), 'bash -n' is unable
+#      to verify this script.  This appears to be a bug in bash...
 
 name="IRIX-MIPSpro-wrapper"
 
@@ -47,8 +52,8 @@ abort="${MIPSPRO_ABORT:-0}"
 date="$( date -u +"%Y%m%d %H:%M" )"
 
 function die() {
-	echo >&2 "$@"
-	[[ -n "$LOGFILE" && -w "$LOGFILE" ]] && echo -e "$date $@"				   \
+	echo >&2 "$*"
+	[[ -n "$LOGFILE" && -w "$LOGFILE" ]] && echo -e "$date $*"				   \
 		>> "$LOGFILE" 2>&1
 	exit 1
 } # die()
@@ -70,20 +75,28 @@ function ifdebug() {
 
 (( $# == 0 )) && die "FATAL:   No arguments passed"
 
-LOGFILE="$( readlink -f ${EPREFIX}/var/log/IRIX-MIPSpro-wrapper.log )"
+LOGFILE="$( readlink -f "${EPREFIX}"/var/log/IRIX-MIPSpro-wrapper.log )"
+touch "$LOGFILE" 2>/dev/null
+if ! [[ -w "$LOGFILE" ]]; then
+	LOGFILE2="$( readlink -f "${EPREFIX}"/var/tmp/IRIX-MIPSpro-wrapper.log )"
+	touch "$LOGFILE2" 2>/dev/null
+	if [[ -w "$LOGFILE2" ]]; then
+		LOGFILE="$LOGFILE2"
+		unset LOGFILE2
+	else
+		die "FATAL:   Cannot write to \"$LOGFILE\""
+	fi
+fi
 
 ifdebug ": LOGFILE location is \"$LOGFILE\""
 
-touch "$LOGFILE"
-[ -w "$LOGFILE" ] || die "FATAL:   Cannot write to \"$LOGFILE\""
-
 #set -o xtrace
 
-if [[ $( grep -E -- "-o conftest|conftest\.c|conftest\.o" <<< "$@" ) ]]; then
+if grep -Eq -- " (-o conftest|conftest\.c|conftest\.o) " <<< " $* " ; then
 	# configure can sometimes be very confused by unexpected output...
 	echo -e "$date configure test detected - suppressing further output"	   \
 		>> "$LOGFILE" 2>&1
-	echo -e "               Arguments:\n$0 $@"								   \
+	echo -e "               Arguments:\n$0 $*"								   \
 		>> "$LOGFILE" 2>&1
 	set +o xtrace
 	debug=0
@@ -91,7 +104,7 @@ if [[ $( grep -E -- "-o conftest|conftest\.c|conftest\.o" <<< "$@" ) ]]; then
 	(( permissive = 0 ))
 	(( abort = 1 ))
 else
-	echo -e "$date Compilation started with arguments:\n$0 $@"				   \
+	echo -e "$date Compilation started with arguments:\n$0 $*"				   \
 		>> "$LOGFILE" 2>&1
 fi
 
@@ -131,11 +144,13 @@ injectattr="${MIPSPRO_INJECT:-0}"
 # These should be auto-detected, but you may wish to change
 # OLIMIT or MIPSPRO_OPT.
 MIPSPRO_PLATFORM="${MIPSPRO_PLATFORM:-$(
-	/bin/uname -m | tr [:upper:] [:lower:]
+	/bin/uname -m | tr '[:upper:]' '[:lower:]'
 )}"
 MIPSPRO_CPU="${MIPSPRO_CPU:-$(
-	  /sbin/hinv -c processor | grep ^CPU | cut -d" " -f 3					   \
-	| tr [:upper:] [:lower:]
+	  /sbin/hinv -c processor 2>/dev/null									   \
+	| grep ^CPU																   \
+	| cut -d" " -f 3														   \
+	| tr '[:upper:]' '[:lower:]'
 )}"
 MIPSPRO_ISA="${MIPSPRO_ISA:-mips4}"
 OLIMIT="${OLIMIT:-8192}"
@@ -196,21 +211,21 @@ shopt -s extglob															   \
 	   ) really bash?"
 
 # Shortcut attempts to emulate certain GCC functions...
-for argument in $@; do
-	case $argument in
+for argument in "$@"; do
+	case "$argument" in
 		-v|-?(dump)version|-V)
 			ifdebug ": Shortcutting wrapper for version-check" >&2
-			exec /bin/$tool -version
+			exec /bin/"$tool" -version
 			;;
 		-dumpmachine)
 			echo "${CHOST:-mips-sgi-irix6.5}"
 			exit 0
 			;;
 		-print-search-dirs)
-			echo "install: $( readlink -m $(
-					dirname "$( dirname $( readlink -m "$0" ) )/../."
-			) )/"
-			echo "programs: =$( dirname $( readlink -m "$0" ) )/"
+			echo "install: $( readlink -m "$(
+					dirname "$( dirname "$( readlink -m "$0" )" )/../."
+			)" )/"
+			echo "programs: =$( dirname "$( readlink -m "$0" )" )/"
 			echo "libraries: =${LD_LIBRARYN32_PATH/://:}/:/usr/lib32/:/lib32/"
 			exit 0
 			;;
@@ -240,6 +255,7 @@ done
 ifdebug ": No short-cut" >&2
 
 # Try to determine ABI overrides...
+# shellcheck disable=SC1090
 if [[ -e "${EPREFIX}/etc/make.conf" ]]; then
 	PREFIX_ABI="$( source "${EPREFIX}/etc/make.conf"						   \
 		&& echo "${ABI:-$DEFAULT_ABI}" )" # Variables sourced from make.conf
@@ -286,7 +302,7 @@ function main() {
 	local input=( "$@" )
 	local -a output
 
-	ifdebug ": input:\t$tool ${input[@]}"
+	ifdebug ": input:\t$tool ${input[*]}"
 
 	# NB: The same $output array is used throughout the following sub-functions
 
@@ -432,7 +448,8 @@ function main() {
 						#OLIMIT=$(( $(
 						#	echo "$argument" | cut -d"=" -f 2  | cut -d":" -f 1
 						#) ))
-						local limit="$(
+						local limit
+						limit="$(
 							  echo "$argument" | sed 's/:/\n/g'				   \
 							| grep "^Olimit" | cut -d"=" -f 2 | tail -n 1
 						)"
@@ -481,7 +498,7 @@ function main() {
 			skip=0
 			swallow=0
 
-			if [[ -n "$output" ]]; then
+			if [[ -n "${output[0]}" ]]; then
 				input=( "${output[@]}" )
 				unset output
 			fi
@@ -490,17 +507,16 @@ function main() {
 				if ! (( skip )) && ! (( swallow )); then
 					case $argument in
 						-W*([fbalR])p*([fbalR]),*)
-							local arguments="$(
+							local arguments newarguments
+							arguments="$(
 								  printf -- "$argument"						   \
 								| sed 's!^-W[fbalR]*p[fbalR]*,!!'			   \
 								| sed 's!,-! -!g'
 							)"
-							local newarguments
 							for newarguments in ${arguments}; do
 								output=( "${output[@]}" "${newarguments}" )
 							done
-							unset newarguments
-							unset arguments
+							unset newarguments arguments
 
 							# Now we have that, let's go around again...
 							#
@@ -520,7 +536,7 @@ function main() {
 						# Earlier verions may only support a subset, but there
 						# should be no false negatives.
 						#
-						-C|-D*|-I*|-M|-max_rec_depth\=+([0-9])|-MDtarget|-MDupdate?(,*)|-P|-U*)
+						-C|-D*|-I*|-M|-max_rec_depth=+([0-9])|-MDtarget|-MDupdate?(,*)|-P|-U*)
 							output=( "${output[@]}" "${argument}" )
 							;;
 						-*)
@@ -576,7 +592,7 @@ function main() {
 			skip=0
 			swallow=0
 
-			if [[ -n "$output" ]]; then
+			if [[ -n "${output[0]}" ]]; then
 				input=( "${output[@]}" )
 				unset output
 			fi
@@ -585,16 +601,15 @@ function main() {
 				if ! (( skip )) && ! (( swallow )); then
 					case $argument in
 						-W*([pfbaR])l*([pfbaR]),*)
-							local arguments="$(
+							local arguments newarguments
+							arguments="$(
 								  printf -- "$argument"						   \
 								| sed 's!^-W[pfbaR]*l[pfbaR]*,!!'			   \
 								| sed 's!,-! -!g' )"
-							local newarguments
 							for newarguments in ${arguments}; do
 								output=( "${output[@]}" "${newarguments/,/ }" )
 							done
-							unset newarguments
-							unset arguments
+							unset newarguments arguments
 
 							# Now we have that, let's go around again...
 							#
@@ -628,7 +643,7 @@ function main() {
 						-?(n)32|-64|-abi|-call_shared|-elf|-mips[2-4]|-?(non_)shared|											\
 						-d|-D?( )*([0-9])|-elsmap?( *)|-elspec|-G?( )*([0-9])|-?(no)ivpad|-LD_LAYOUT:*|-multigot|-n|-N|			\
 						-rdata_writable|-rdata_shared|-T?( )*([0-9a-fA-F])|-Xlocal?( *)|-z|										\
-						-LD_DYNAMIC\:rhf_mips_flags\=*|-?(default_)delay_load|-e?( *)|-exact_version|-exports?(_file)?( *)|		\
+						-LD_DYNAMIC:rhf_mips_flags=*|-?(default_)delay_load|-e?( *)|-exact_version|-exports?(_file)?( *)|		\
 						-exported_symbol?( *)|-fini?( *)|-force_load|-full_transitive_link|-hiddens_file?( *)|					\
 						-hidden_symbol?( *)|-hides|-I?( *)|-ignore_minor|-ignore_version|-init?( *)|-no_library_replacement|	\
 						-no_rqs|-?(no_)transitive_link|-require_minor|-rpath?( *)|												\
@@ -731,9 +746,9 @@ function main() {
 									;;
 								*)
 									if (( nocallback )); then
-										ifdebug ": DEBUG:   ld:    Unrecognised linker" \
-										          "option \"$argument\" dropped" \
-												  "during CFLAG check"
+										ifdebug ": DEBUG:   ld:    Unrecognised" \
+										          "linker option \"$argument\"" \
+												  "dropped during CFLAG check"
 									else
 										# Some builds throw CFLAGS and LDFLAGS in together...
 										progress=( "${output[@]}" )
@@ -742,11 +757,11 @@ function main() {
 										abort=0
 										nocallback=1
 										checkcflags "${argument}" # &>/dev/null
-										local checkresult=$?
+										local -i checkresult=$?
 										nocallback=0
 										abort=$globalabort
 										unset globalabort
-										if (( $checkresult )); then
+										if (( checkresult )); then
 											# No idea what it is ;)
 											if (( permissive )); then
 												ifverbose "WARNING: ld:    Unrecognised linker option <$argument> passed"
@@ -838,7 +853,7 @@ function main() {
 						exec "/bin/$tool" "-version"
 						;;
 					--)
-						#ifverbose "NOTICE:  cc/CC: All further options will" \
+						#ifverbose "NOTICE:  cc/CC: All further options will"  \
 						#          "be passed unmodified"
 						ifverbose "NOTICE:  cc/CC: Ignoring \"$argument\""
 						output=( "${output[@]}" "${argument}" )
@@ -849,8 +864,8 @@ function main() {
 						if (( allownostd )); then
 							output=( "${output[@]}" "${argument}" )
 						else
-							ifverbose "WARNING: cc/CC: \"$argument\" passed to" \
-							          "$tool, option dropped"
+							ifverbose "WARNING: cc/CC: \"$argument\" passed"   \
+							          "to $tool, option dropped"
 						fi
 						result=1
 						;;
@@ -891,8 +906,8 @@ function main() {
 						;;
 					-c99)
 						if [[ "$tool" == "c89" ]]; then
-							ifverbose "WARNING: ${tool}:   Cannot run this"		\
-							          "front-end in C99 mode, \"$argument\""	\
+							ifverbose "WARNING: ${tool}:   Cannot run this"	   \
+							          "front-end in C99 mode, \"$argument\""   \
 									  "dropped"
 							result=1
 						else
@@ -910,19 +925,20 @@ function main() {
 					-W+([pfbalR]),*|-w?(off))
 						# We need to be careful here, because we don't want to
 						# clobber $output
-						case $argument in
+						case "$argument" in
 							-W*([fbalR])p*([fbalR]),*)
 								progress=( "${output[@]}" )
 								unset output
 								local globalabort=$abort
 								abort=0
-								checkcppflags ${argument}
+								checkcppflags "${argument}"
 								abort=$globalabort
 								unset globalabort
 								for arguments in "${output[@]}"; do
-									local checkedargument="$(
-										  printf -- "$arguments" \
-										| sed -r 's/(^|\s)-/\1-Wp,-/g' \
+									local checkedargument
+									checkedargument="$(
+										  printf -- "$arguments"			   \
+										| sed -r 's/(^|\s)-/\1-Wp,-/g'		   \
 										| sed -r 's/(^|\s)([^-])/\1-Wp,\2/g'
 									)"
 									local newarguments
@@ -940,13 +956,14 @@ function main() {
 								unset output
 								local globalabort=$abort
 								abort=0
-								checkldflags ${argument}
+								checkldflags "${argument}"
 								abort=$globalabort
 								unset globalabort
 								for arguments in "${output[@]}"; do
-									local checkedargument="$(
-										  printf -- "$arguments" \
-										| sed -r 's/(^|\s)-/\1-Wl,-/g' \
+									local checkedargument
+									checkedargument="$(
+										  printf -- "$arguments"			   \
+										| sed -r 's/(^|\s)-/\1-Wl,-/g'		   \
 										| sed -r 's/(^|\s)([^-])/\1-Wl,\2/g'
 									)"
 									local newarguments
@@ -974,13 +991,13 @@ function main() {
 						;;
 					-*)
 						if (( permissive )); then
-							ifverbose "WARNING: cc/CC: Unrecognised compiler" \
+							ifverbose "WARNING: cc/CC: Unrecognised compiler"  \
 							          "option <$argument> passed"
 							output=( "${output[@]}" "${argument}" )
 						else
 							if (( nocallback )); then
 								ifdebug ": DEBUG:   cc/CC: Unrecognised compiler" \
-								          "option \"$argument\" dropped" \
+								          "option \"$argument\" dropped"	   \
 										  "during LDFLAG check"
 							else
 								# Some builds throw LDFLAGS and CFLAGS in together,
@@ -991,14 +1008,14 @@ function main() {
 								abort=0
 								nocallback=1
 								checkldflags "${argument}" # &>/dev/null
-								local checkresult=$?
+								local -i checkresult=$?
 								nocallback=0
 								abort=$globalabort
 								unset globalabort
-								if (( $checkresult )); then
+								if (( checkresult )); then
 									# No idea what it is ;)
-									ifverbose "WARNING: cc/CC: Unrecognised" \
-									          "compiler option \"$argument\"" \
+									ifverbose "WARNING: cc/CC: Unrecognised"   \
+									          "compiler option \"$argument\""  \
 									          "dropped"
 									output=( "${progress[@]}" )
 									unset progress
@@ -1012,8 +1029,8 @@ function main() {
 									# whether it takes further arguments.
 									# Additionally, some options such as '-shared'
 									# need to be common to compiler and linker.
-									ifverbose "WARNING: cc/CC: Unrecognised" \
-									          "compiler option <$argument>" \
+									ifverbose "WARNING: cc/CC: Unrecognised"   \
+									          "compiler option <$argument>"	   \
 									          "passed as valid ld option"
 									output=( "${progress[@]}" "${output[@]}" )
 									nofilter=( "${nofilter[@]}" "${output[@]}" )
@@ -1033,7 +1050,7 @@ function main() {
 							fi
 							result=1
 						else
-							ifdebug ": NOTICE:  cc/CC: Passing non-option" \
+							ifdebug ": NOTICE:  cc/CC: Passing non-option"	   \
 							        "argument ${argument}"
 							output=( "${output[@]}" "${argument}" )
 						fi
@@ -1043,7 +1060,7 @@ function main() {
 							ifverbose "WARNING: cc/CC: \"$lastarg $argument\" is suspicious..."
 							echo "$date WARN:  cc: <$lastarg $argument>" >> "$LOGFILE" 2>&1
 						fi
-						ifdebug ": NOTICE:  cc/CC: Passing non-option" \
+						ifdebug ": NOTICE:  cc/CC: Passing non-option"		   \
 						        "argument ${argument}"
 						output=( "${output[@]}" "${argument}" )
 						;;
@@ -1059,7 +1076,7 @@ function main() {
 		unset lastarg
 
 		if (( ! nocallback )) && [[ -z "${output[*]}" ]]; then
-			echo "$date ABORT: checkcflags: Ran out of arguments for" \
+			echo "$date ABORT: checkcflags: Ran out of arguments for"		   \
 			     "\"$parameters\" ($( pwd ))" >> "$LOGFILE" 2>&1
 			# Some configure routines may barf if we exit 1 here...
 			exit 0
@@ -1072,12 +1089,11 @@ function main() {
 			if [[ -n "$lastarg" ]]; then
 				case "$lastarg" in
 					-Wl,-*)
-						if [[ -n "$(
-							  printf -- "$lastarg $currentarg" \
-							| grep -- '^-Wl,-[^ ]\+ -Wl,[^-]'
-						)" ]]; then
+						if printf -- "$lastarg $currentarg"					   \
+							| grep -q -- '^-Wl,-[^ ]\+ -Wl,[^-]'
+						then
 							argument="$(
-								  printf -- "$lastarg $currentarg" \
+								  printf -- "$lastarg $currentarg"			   \
 								| sed -r 's!^-Wl,-([^ ]+) -Wl,!-Wl,-\1,!g'
 							)"
 							progress=( "${progress[@]}" "${argument}" )
@@ -1126,7 +1142,7 @@ function main() {
 			skip=0
 			swallow=0
 
-			if [[ -n "$output" ]]; then
+			if [[ -n "${output[0]}" ]]; then
 				input=( "${output[@]}" )
 				unset output
 			fi
@@ -1141,15 +1157,14 @@ function main() {
 						exec "/bin/$tool" "-version"
 						;;
 						-W*([pfblR])a*([pfblR]),*)
-							local arguments="$( printf -- "$argument" | \
-								sed 's!^-W[pfblR]*a[pfblR]*,!!' | \
-								sed 's!,-! -!g' )"
-							local newarguments
+							local arguments newarguments
+							arguments="$( printf -- "$argument"				   \
+								| sed 's!^-W[pfblR]*a[pfblR]*,!!'			   \
+								| sed 's!,-! -!g' )"
 							for newarguments in ${arguments}; do
 								output=( "${output[@]}" "${newarguments/,/ }" )
 							done
-							unset newarguments
-							unset arguments
+							unset newarguments arguments
 
 							# Now we have that, let's go around again...
 							#
@@ -1190,13 +1205,13 @@ function main() {
 							output=( "${output[@]}" "${argument}" )
 							;;
 						-fullasopt|-H+([hpfbal])|-KPIC|-W+([pfabl]),*|-Y+([pfbalISL]),*|-t+([hpab])|-h*|-B*)
-							ifverbose "WARNING: as:    Passing assembler" \
-							          "compiler-development option" \
+							ifverbose "WARNING: as:    Passing assembler"	   \
+							          "compiler-development option"			   \
 									  "<$argument>"
 							output=( "${output[@]}" "${argument}" )
 							;;
 						-*)
-							ifverbose "WARNING: as:    Invalid assembler" \
+							ifverbose "WARNING: as:    Invalid assembler"	   \
 							          "option \"$argument\" dropped"
 							swallow=1
 							result=1
@@ -1206,7 +1221,7 @@ function main() {
 							;;
 					esac
 				elif (( swallow )); then
-					ifverbose "WARNING: as:    Dropping follow-on to invalid" \
+					ifverbose "WARNING: as:    Dropping follow-on to invalid"  \
 					          "argument \"$argument\""
 					swallow=0
 				else
@@ -1230,6 +1245,7 @@ function main() {
 
 		unset output
 
+		# shellcheck disable=SC2167
 		for argument in "${input[@]}"; do
 			if (( drop )); then
 				drop=0
@@ -1237,7 +1253,9 @@ function main() {
 				unset argument
 			fi
 
-			(( ! skip )) && case $argument in
+			# shellcheck disable=SC2030,SC2031
+			(( ! skip )) &&
+			case $argument in
 				--)
 					#skip=1
 					;;
@@ -1248,7 +1266,7 @@ function main() {
 					# FIXME for sys-libs/e2fsprogs-libs
 					# Only seems to exist in 1.41.7 - a typo?
 					replacement="${argument/--/-}"
-					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					ifverbose "WARNING: pass2: GNU option \"$argument\""	   \
 					          "transformed to <$replacement>"
 					argument="$replacement"
 					unset replacement
@@ -1271,7 +1289,7 @@ function main() {
 					;;
 				-W*([pfbaR])l*([pfbaR]),--verbose)
 					replacement="${argument/-verbose/v}"
-					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					ifverbose "WARNING: pass2: GNU option \"$argument\""	   \
 					          "transformed to <$replacement>"
 					argument="$replacement"
 					unset replacement
@@ -1313,8 +1331,8 @@ function main() {
 					;;
 				-32|-o32|-n32|-64)
 					if [[ "$argument" != "${MIPSPRO_ABI}" ]]; then
-						ifverbose "WARNING: pass2: ABI \"$argument\" upgraded to" \
-						          "<${MIPSPRO_ABI}>"
+						ifverbose "WARNING: pass2: ABI \"$argument\" upgraded" \
+						          "to <${MIPSPRO_ABI}>"
 						argument="${MIPSPRO_ABI}"
 					fi
 					;;
@@ -1322,15 +1340,15 @@ function main() {
 				-L/lib?(/))
 					#ifverbose "WARNING: pass2: Library option \"$argument\" dropped"
 					#unset argument
-					ifverbose "WARNING: pass2: Library option \"$argument\" upgraded to" \
-					          "<-L$EPREFIX/$LIBDIR>"
+					ifverbose "WARNING: pass2: Library option \"$argument\""   \
+					          "upgraded to <-L$EPREFIX/$LIBDIR>"
 					argument="-L$EPREFIX/$LIBDIR"
 					;;
 				-L/usr/lib?(/))
 					#ifverbose "WARNING: pass2: Library option \"$argument\" dropped"
 					#unset argument
-					ifverbose "WARNING: pass2: Library option \"$argument\" upgraded to" \
-					          "<-L$EPREFIX/usr/$LIBDIR>"
+					ifverbose "WARNING: pass2: Library option \"$argument\""   \
+					          "upgraded to <-L$EPREFIX/usr/$LIBDIR>"
 					argument="-L$EPREFIX/usr/$LIBDIR"
 					;;
 				# Some programs seem keen on uber-optimisation...
@@ -1338,23 +1356,24 @@ function main() {
 				-O?([0-3]))
 					# Remember the lowest value of this argument...
 					[[ "$OPTIMISE" == "-O" ]] && OPTIMISE="-O2"
-					ifverbose "WARNING: pass2: Changing optimisation" \
-					          "to lowest of <$OPTIMISE> and" \
+					ifverbose "WARNING: pass2: Changing optimisation"		   \
+					          "to lowest of <$OPTIMISE> and"				   \
 							  "<$argument> ..."
 					[[ "$argument" == "-O" ]] && argument="-O2"
+					# shellcheck disable=SC2165
 					OPTIMISE="$(
 						for argument in $OPTIMISE $argument; do
 							printf -- "$argument\n"
 						done | sort -g | head -n 1
 					)"
 					unset argument
-					ifverbose "INFO:    pass2: Optimisation level is" \
-					          "now $OPTIMISE"
+					ifverbose "INFO:    pass2: Optimisation level is now"	   \
+					          "$OPTIMISE"
 					;;
 				-pthread)
 					# FIXME for x11-libs/pixman
 					replacement="-lpthread"
-					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					ifverbose "WARNING: pass2: GNU option \"$argument\""	   \
 					          "transformed to <$replacement> and appended"
 					append=( "${append[@]}" "${replacement}" )
 					unset replacement argument
@@ -1368,56 +1387,57 @@ function main() {
 					;;
 				-R*)
 					if [[ -d "${argument/-R/}" ]]; then
-						ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+						ifverbose "WARNING: pass2: GNU option \"$argument\""   \
 						          "transformed to <-Wl,-rpath,${argument/-R/}>"
 						argument="-Wl,-rpath,${argument/-R/}"
 					else
-						ifverbose "WARNING: pass2: GNU option \"$argument\" dropped"
+						ifverbose "WARNING: pass2: GNU option \"$argument\""   \
+						          "dropped"
 						unset argument
 					fi
 					;;
 				-export-symbols)
 					replacement="-exports_file"
-					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					ifverbose "WARNING: pass2: GNU option \"$argument\""	   \
 					          "transformed to <$replacement>"
 					argument="$replacement"
 					unset replacement
 					;;
 				-fopenmp)
 					replacement="-mp"
-					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					ifverbose "WARNING: pass2: GNU option \"$argument\""	   \
 					          "transformed to <$replacement>"
 					argument="$replacement"
 					unset replacement
 					;;
 				-fpic|-fPIC)
-					ifverbose "WARNING: pass2: -KPIC is default on" \
-					          "IRIX, GNU option \"$argument\" dropped"
+					ifverbose "WARNING: pass2: -KPIC is default on IRIX, GNU"  \
+					          "option \"$argument\" dropped"
 					unset argument
 					continue
 					;;
 				-fsigned-char|-qchars=signed)
 					replacement="-signed"
-					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					ifverbose "WARNING: pass2: GNU option \"$argument\""	   \
 					          "transformed to <$replacement>"
 					argument="$replacement"
 					unset replacement
 					;;
 				-funsigned-char|-qchars=unsigned)
-					ifverbose "WARNING: pass2: unsigned char is default on" \
+					ifverbose "WARNING: pass2: unsigned char is default on"	   \
 					          "IRIX, GNU option \"$argument\" dropped"
 					unset argument
 					;;
 				-g?([023])?(slim))
-					ifverbose "WARNING: pass2: Debug level \"$argument\"" \
+					ifverbose "WARNING: pass2: Debug level \"$argument\""	   \
 					          "dropped"
 					unset argument
 					continue
 					;;
 				-mips?)
 					if [[ "$argument" != "-${MIPSPRO_ISA}" ]]; then
-						ifverbose "WARNING: pass2: ISA \"$argument\" upgraded to" \
-						          "<-${MIPSPRO_ISA}>"
+						ifverbose "WARNING: pass2: ISA \"$argument\" upgraded" \
+						          "to <-${MIPSPRO_ISA}>"
 						argument="-${MIPSPRO_ISA}"
 					fi
 					;;
@@ -1425,8 +1445,8 @@ function main() {
 				#
 				-nostdinc)
 					if ! (( allownostd )); then
-						ifverbose "WARNING: pass2: Standard includes" \
-						          "are required, \"$argument\" dropped"
+						ifverbose "WARNING: pass2: Standard includes are"	   \
+						          "required, \"$argument\" dropped"
 						unset argument
 						continue
 					fi
@@ -1443,15 +1463,15 @@ function main() {
 								-undef)
 									# This is a hack to work around the libX11
 									# 'cpp' checks...
-									ifverbose "WARNING: pass2: GNU option" \
-									          "\"$argument\" changed to <-Uunix>" \
-											  "(as libX11 workaround)"
+									ifverbose "WARNING: pass2: GNU option"	   \
+									          "\"$argument\" changed to"	   \
+											  "<-Uunix> (as libX11 workaround)"
 									argument="-Uunix"
 									;;
 								-traditional)
 									# This is a hack to work around the libX11
 									# 'cpp' checks...
-									ifverbose "WARNING: pass2: GNU option" \
+									ifverbose "WARNING: pass2: GNU option"	   \
 									          "\"$argument\" dropped"
 									unset argument
 									continue
@@ -1482,58 +1502,66 @@ function main() {
 					case $argument in
 						# These can also appear as -Wp,-Mx options...
 
-						# Hmm - having read the documentation again, -MD == -M -MF
-						# without implying -E - so code is produced and output.
-						# This again makes it equivalent to -MDupdate on IRIX, so
-						# far as I can tell...
-						# -MMD is the same as -MD, except only user header files
-						# are referenced.  We'll just have to hope with this one...
+						# Hmm - having read the documentation again,
+						# -MD == -M -MF without implying -E - so code is
+						# produced and output.
+						# This again makes it equivalent to -MDupdate on IRIX,
+						# so far as I can tell...
+						# -MMD is the same as -MD, except only user header
+						# files are referenced.  We'll just have to hope with
+						# this one...
 						-MM|-W*([fbalR])p*([fbalR]),?(*,)-MM?(,*))
 							replacement="${argument/-MM/-M}"
-							ifverbose "WARNING: pass2: -MM does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
-							ifverbose "WARNING: pass2: Output may be approximated!"
+							ifverbose "WARNING: pass2: -MM does not exist on"  \
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
+							ifverbose "WARNING: pass2: Output may be"		   \
+							          "approximated!"
 							argument="$replacement"
 							;;
 						-MF|-W*([fbalR])p*([fbalR]),?(*,)-MF?(,*))
 							replacement="${argument/-MF/-MDupdate}"
-							ifverbose "WARNING: pass2: -MF does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
+							ifverbose "WARNING: pass2: -MF does not exist on"  \
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
 							argument="$replacement"
 							;;
 						-MG|-W*([fbalR])p*([fbalR]),-MG)
-							ifverbose "WARNING: pass2: -MG does not exist on" \
+							ifverbose "WARNING: pass2: -MG does not exist on"  \
 							          "IRIX, GNU option \"$argument\" dropped"
 							unset argument
 							continue
 							;;
 						-W*([fbalR])p*([fbalR]),*,-MG?(,*))
 							replacement="${argument/,-MG/}"
-							ifverbose "WARNING: pass2: -MP does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
+							ifverbose "WARNING: pass2: -MP does not exist on"  \
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
 							argument="$replacement"
 							;;
 						-MP|-W*([fbalR])p*([fbalR]),-MP)
 							# Note that -MP:... is valid
-							ifverbose "WARNING: pass2: -MP does not exist on" \
+							ifverbose "WARNING: pass2: -MP does not exist on"  \
 							          "IRIX, GNU option \"$argument\" dropped"
 							unset argument
 							continue
 							;;
 						-W*([fbalR])p*([fbalR]),*,-MP?(,*))
 							replacement="${argument/,-MP/}"
-							ifverbose "WARNING: pass2: -MP does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
+							ifverbose "WARNING: pass2: -MP does not exist on"  \
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
 							argument="$replacement"
 							;;
 						-MT|-W*([fbalR])p*([fbalR]),?(*,)-MT?(,*))
 							replacement="${argument/-MT/-MDtarget}"
 							# Although not documented, -MDtarget is a valid
 							# cc/CC option!
-							# (it is documented for cpp, but cpp itself is supposed
-							# to be for legacy non-ANSI usage only...)
-							ifverbose "WARNING: pass2: -MT does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
+							# (it is documented for cpp, but cpp itself is
+							# supposed to be for legacy non-ANSI usage only...)
+							ifverbose "WARNING: pass2: -MT does not exist on"  \
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
 							argument="$replacement"
 							;;
 						-MQ|-W*([fbalR])p*([fbalR]),?(*,)-MQ?(,*))
@@ -1541,63 +1569,71 @@ function main() {
 							# As above, except that -MQ is supposed to quote
 							# characters which have special meaning.
 							# We can but hope...
-							ifverbose "WARNING: pass2: -MQ does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
-							ifverbose "WARNING: pass2: Output may be approximated!"
+							ifverbose "WARNING: pass2: -MQ does not exist on"  \
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
+							ifverbose "WARNING: pass2: Output may be"		   \
+							          "approximated!"
 							argument="$replacement"
 							;;
 						-MD|-W*([fbalR])p*([fbalR]),?(*,)-MD?(,*))
 							replacement="${argument/-MD/-MDupdate}"
-							ifverbose "WARNING: pass2: -MD does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
-							ifverbose "WARNING: pass2: Output may be approximated!"
+							ifverbose "WARNING: pass2: -MD does not exist on"  \
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
+							ifverbose "WARNING: pass2: Output may be"		   \
+							          "approximated!"
 							argument="$replacement"
 							;;
 						-MMD|-W*([fbalR])p*([fbalR]),?(*,)-MMD?(,*))
 							replacement="${argument/-MMD/-MDupdate}"
 							ifverbose "WARNING: pass2: -MMD does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
-							ifverbose "WARNING: pass2: Output may be approximated!"
+							          "IRIX, \"$argument\" changed to"		   \
+									  "<$replacement>"
+							ifverbose "WARNING: pass2: Output may be"		   \
+							          "approximated!"
 							argument="$replacement"
 							;;
 					esac
-					[[ "$tool" != "cpp" ]] && [[ "$tool" != "as" ]] && case $argument in
+					[[ "$tool" != "cpp" ]] &&
+					[[ "$tool" != "as" ]] &&
+					case $argument in
 						-fexceptions)
 							# -exceptions is an o32 flag which applies to CC
 							# only, and uses a different front-end.  This is
 							# not what we want...
 							ifverbose "WARNING: pass2: \"-LANG:exceptions=ON\""\
-							          "is default on IRIX, GNU option" \
+							          "is default on IRIX, GNU option"		   \
 									  "\"$argument\" dropped"
 							unset argument
 							continue
 							;;
 						-fno-exceptions)
 							replacement="-LANG:exceptions=OFF"
-							ifverbose "WARNING: pass2: GNU option \"$argument\"" \
-							          "changed to <$replacement>"
+							ifverbose "WARNING: pass2: GNU option"			   \
+							          "\"$argument\" changed to <$replacement>"
 							output=( "${output[@]}" "$replacement" )
 							unset argument
 							continue
 							;;
 						-finline-limit=*)
 							replacement="-INLINE:max_pu_size_inline=${argument/*=/}"
-							ifverbose "WARNING: pass2: GNU option \"$argument\"" \
-							          "changed to <$replacement>"
+							ifverbose "WARNING: pass2: GNU option"			   \
+							          "\"$argument\" changed to <$replacement>"
 							output=( "${output[@]}" "$replacement" )
 							unset argument
 							continue
 							;;
 						-f?(no-)stack-protector?(-all))
-							ifverbose "WARNING: pass2: GNU option \"$argument\"" \
-							          "dropped"
+							ifverbose "WARNING: pass2: GNU option"			   \
+							          "\"$argument\" dropped"
 							unset argument
 							continue
 							;;
 						-fstrict-aliasing)
 							replacement="-OPT:alias=RESTRICT"
-							ifverbose "WARNING: pass2: GNU option \"$argument\"" \
-							          "changed to <$replacement>"
+							ifverbose "WARNING: pass2: GNU option"			   \
+							          "\"$argument\" changed to <$replacement>"
 							output=( "${output[@]}" "$replacement" )
 							unset argument
 							continue
@@ -1613,7 +1649,7 @@ function main() {
 						-rdynamic)
 							# I don't know what the MIPSpro equivalent is!
 							ifverbose "WARNING: pass2: \"$argument\""		   \
-							          " equivalent is unknown, argument dropped"
+							          "equivalent is unknown, argument dropped"
 							unset argument
 							continue
 							;;
@@ -1623,10 +1659,12 @@ function main() {
 							:
 							;;
 						-Werror-implicit-function-declaration)
-							replacement=( "-diag_error" "1196" )
+						    local -a replacementarray=()
+							replacementarray=( "-diag_error" "1196" )
 							ifverbose "WARNING: pass2: GNU option"			   \
-							          "\"$argument\" changed to <$replacement>"
-							output=( "${output[@]}" "${replacement[@]}" )
+							          "\"$argument\" changed to"			   \
+									  "<${replacement[*]}>"
+							output=( "${output[@]}" "${replacementarray[@]}" )
 							unset argument
 							continue
 							;;
@@ -1690,7 +1728,7 @@ function main() {
 			[[ -n "$argument" ]] && output=( "${output[@]}" "${argument}" )
 			unset replacement
 		done
-		[[ -n "$append" ]] && output=( "${output[@]}" "${append}" )
+		[[ -n "${append[0]}" ]] && output=( "${output[@]}" "${append[@]}" )
 		unset append
 
 		# Common options with different meanings:
@@ -1867,10 +1905,9 @@ function main() {
 						unset lastarg
 						;;
 					-diag_*)
-						if [[ -n "$(
-							  printf -- "$lastarg $currentarg"				   \
-							| grep -E -- '^-diag_[^ ]+ [0-9]+'
-						)" ]]; then
+						if printf -- "$lastarg $currentarg"					   \
+							| grep -Eq -- '^-diag_[^ ]+ [0-9]+'
+						then
 							argument="$(
 								  printf -- "$lastarg $currentarg"			   \
 								| sed -r 's!^(-diag_[^ ]+) ([0-9]+)!\1 \2!g'
@@ -1880,10 +1917,9 @@ function main() {
 						fi
 						;;
 					-rpath*)
-						if [[ -n "$(
-							  printf -- "$lastarg $currentarg"				   \
-							| grep -E -- '^-rpath[, ][^ ]+'
-						)" ]]; then
+						if printf -- "$lastarg $currentarg"					   \
+							| grep -Eq -- '^-rpath[, ][^ ]+'
+						then
 							argument="$(
 								  printf -- "$lastarg $currentarg"			   \
 								| sed -r 's!^-rpath([, ])([^ ]+)!-rpath \2!g'
@@ -1893,10 +1929,9 @@ function main() {
 						fi
 						;;
 					-woff*)
-						if [[ -n "$(
-							  printf -- "$lastarg $currentarg"				   \
+						if printf -- "$lastarg $currentarg"					   \
 							| grep -E -- '^-woff [0-9,]+'
-						)" ]]; then
+						then
 							argument="$(
 								  printf -- "$lastarg $currentarg"			   \
 								| sed -r 's!^-woff ([0-9,]+)!-woff \1!g'
@@ -1939,7 +1974,7 @@ function main() {
 				elif (( pass )); then
 					pass=0
 					drop=0
-					if [[ -n "$( printf -- "$argument" | grep -- "^-" )" ]]; then
+					if printf -- "$argument" | grep -q -- "^-"; then
 						ifverbose "NOTICE:  pass3: Passing follow-on option"   \
 						          "<$argument>"
 					else
@@ -1950,7 +1985,7 @@ function main() {
 					continue
 				elif (( drop )); then
 					drop=0
-					if [[ -n "$( printf -- "$argument" | grep -- "^-" )" ]]; then
+					if printf -- "$argument" | grep -q -- "^-"; then
 						ifverbose "NOTICE:  pass3: Passing follow-on option"   \
 						          "<$argument>"
 					else
@@ -1976,7 +2011,7 @@ function main() {
 						;;
 					# FIXME for dev-lang/tcl
 					-DTCL_PACKAGE_PATH=\"*)
-						if [[ -z "$( printf -- "$argument" | grep '"$' )" ]]; then
+						if ! printf -- "$argument" | grep -q '"$'; then
 							ifverbose "NOTICE:  pass3: Correcting trailing"	   \
 							          "space in define when building Tcl"
 							argument="$( printf -- "$argument" | sed 's/$/"/' )"
@@ -2011,29 +2046,26 @@ function main() {
 						quiet=1
 						;;
 					*\'*\'|*\"*\"|*\`*\`)
-						if [[ -n "$(
-							  printf -- "$argument"							   \
-							| grep -- "^-"
-						)" ]]; then
+						if printf -- "$argument" | grep -q -- "^-"; then
 							ifverbose "NOTICE:  pass3: Option with quoted"	   \
 							          "string <$argument> passed ..."
 						else
 							ifverbose "NOTICE:  pass3: Argument with quoted"   \
 							          "string <$argument> passed ..."
 						fi
-						quotedpass=0
+						#quotedpass=0
 						quiet=1
 						;;
 					\'*|\"*|\`*)
 						ifverbose "NOTICE:  pass3: Start of quoted string"	   \
 						          "<$argument> passed ..."
-						quotedpass=1
+						#quotedpass=1
 						quiet=1
 						;;
 					*\'|*\"|*\`)
 						ifverbose "NOTICE:  pass3: End of quoted string"	   \
 						          "<$argument> passed ..."
-						quotedpass=0
+						#quotedpass=0
 						quiet=1
 						;;
 					-*)
@@ -2121,10 +2153,9 @@ function main() {
 		local libtoolobj haveo=0
 
 		for argument in "${output[@]}"; do
-			if [[ -n "$(
-				printf -- "$argument" |										   \
-				grep -E -- '^-diag_[^ ]+ [0-9]+$|^-rpath [^ ]+$|^-woff [0-9,]+'
-			)" ]]; then
+			if printf -- "$argument" |
+				grep -Eq -- '^-diag_[^ ]+ [0-9]+$|^-rpath [^ ]+$|^-woff [0-9,]+'
+			then
 				input=( "${input[@]}" "$(
 					  printf -- "$argument"									   \
 					| cut -d" " -f 1
@@ -2177,16 +2208,16 @@ function main() {
 	exec "/bin/$tool" "${output[@]}"
 } # main()
 
-ifdebug ": INFO:    IMpw:  Received input \"$@\""
+ifdebug ": INFO:    IMpw:  Received input \"$*\""
 #ifdebug ": INFO:    IMpw:  Optimising at no more than $OPTIMISE"
 
 declare -a nofilter
 
 nocallback=0
-parameters="$@"
+parameters="$*"
 
 main "$@"
 
 exit 0
 
-# vi: set syntax=sh ts=4:
+# vi: set syntax=sh ts=4 colorcolumn=80:
