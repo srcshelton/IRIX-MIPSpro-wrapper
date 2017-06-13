@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#! /usr/bin/env bash
 
 #
 # IRIX-MIPSpro-wrapper; Copyright 2008, 2009, 2010 Stuart Shelton
@@ -27,7 +27,14 @@
 # /bin/uname, /sbin/hinv, readlink, touch, tr, grep, cut, GNU sed,
 # sort, head, basename.
 #
-# Version 20100316.1
+# Version 20100713.2
+#
+# Changes since:
+# 20100702.1	Try to handle more GNU -M* arguments
+# 20100629.1	Fix "-l" handling in pass3 (next argument shouldn't
+#				be passed regardless, as pass1 should have squashed
+#				parameters)
+# 20100525.1	Handle GNU -fopenmp directive
 #
 
 name="IRIX-MIPSpro-wrapper"
@@ -195,6 +202,10 @@ for argument in $@; do
 			ifdebug ": Shortcutting wrapper for version-check" >&2
 			exec /bin/$tool -version
 			;;
+		-dumpmachine)
+			echo "${CHOST:-mips-sgi-irix6.5}"
+			exit 0
+			;;
 		-print-search-dirs)
 			echo "install: $( readlink -m $(
 					dirname "$( dirname $( readlink -m "$0" ) )/../."
@@ -206,13 +217,18 @@ for argument in $@; do
 		-print-multi-os-directory)
 			# Note sure about this one, it's undocumented.
 			# On a test machine, always returns "."
-			echo "."
+			# Update: gcc-4.3.4 returns "../lib64"
+			# Update: The output is "." on 32-bit machines, and "../lib64"
+			#         (regardless of location) on 64-bit machines.
+			#         IRIX is indeed 64-bit, but portage is 32-bit only.
+			# This is a best-guess value.
+			echo "../lib32"
 			exit 0
 			;;
 		-qversion)
 			# gcc doesn't like this either...
-			echo "cc: unrecognised option '$argument'"
-			echo "cc: no input files"
+			echo "${tool}: unrecognised option '$argument'"
+			echo "${tool}: no input files"
 			exit 1
 			;;
 		-dumpspecs)
@@ -435,7 +451,11 @@ function main() {
 						ifverbose "INFO:    pass1: Olimit is now \"$OLIMIT\""
 						;;
 					--)
-						skip=1
+						unset actual
+						unset prefix
+						unset expect
+						squash=0
+						#skip=1
 						;;
 				esac
 			fi
@@ -489,7 +509,7 @@ function main() {
 							;;
 						--)
 							output=( "${output[@]}" "${argument}" )
-							skip=1
+							#skip=1
 							;;
 						# Any occurance of relative include paths should be
 						# placed before absolute ones...
@@ -583,7 +603,7 @@ function main() {
 							;;
 						--)
 							output=( "${output[@]}" "${argument}" )
-							skip=1
+							#skip=1
 							;;
 						-L|-nostdlib)
 							if (( allownostd )); then
@@ -818,10 +838,11 @@ function main() {
 						exec "/bin/$tool" "-version"
 						;;
 					--)
-						ifverbose "NOTICE:  cc/CC: All further options will" \
-						          "be passed unmodified"
+						#ifverbose "NOTICE:  cc/CC: All further options will" \
+						#          "be passed unmodified"
+						ifverbose "NOTICE:  cc/CC: Ignoring \"$argument\""
 						output=( "${output[@]}" "${argument}" )
-						skip=1
+						#skip=1
 						;;
 					# -I alone is a symonym for -nostdinc
 					-nostdinc|-I)
@@ -864,7 +885,7 @@ function main() {
 					-U*|-use_readonly_const|-use_readwrite_const|-use_command|-use_suffix|										\
 					-v|-version|																								\
 					-w?(off)|																									\
-					-Xcpluscomm|-x?(c|c++|f|f90|assembler|object|none)|															\
+					-Xcpluscomm|-x?(c|c++|f|f90|assembler|object|none)|																								\
 					-Y|-Y+([pfbalRISL]),*)
 						output=( "${output[@]}" "${argument}" )
 						;;
@@ -1137,7 +1158,7 @@ function main() {
 							;;
 						--)
 							output=( "${output[@]}" "${argument}" )
-							skip=1
+							#skip=1
 							;;
 						-nostdinc)
 							if (( allownostd )); then
@@ -1205,6 +1226,7 @@ function main() {
 		local input=( "$@" )
 		local argument progress replacement
 		local skip=0 drop=0
+		local -a append
 
 		unset output
 
@@ -1217,14 +1239,14 @@ function main() {
 
 			(( ! skip )) && case $argument in
 				--)
-					skip=1
+					#skip=1
 					;;
 				--help|--version|-W+([pfbalR]),--)
 					# Do nothing, but don't get filtered below...
-					:
 					;;
 				--shared)
-					# Only seems to exist in e2fsprogs-libs(-1.14.7) - a typo?
+					# FIXME for sys-libs/e2fsprogs-libs
+					# Only seems to exist in 1.41.7 - a typo?
 					replacement="${argument/--/-}"
 					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
 					          "transformed to <$replacement>"
@@ -1272,6 +1294,11 @@ function main() {
 					fi
 					;;
 				--*|-W+([pfbalR]),--*)
+					# This works on the assumption that all other
+					# options we're interested in start with a
+					# single hyphen... as usual, GCC throws a
+					# spanner in the works here with things such
+					# as '--param', '--version-script', etc. :(
 					if (( permissive )); then
 						ifverbose "WARNING: pass2: Unknown GNU option \"$argument\" passed"
 					else
@@ -1324,7 +1351,17 @@ function main() {
 					ifverbose "INFO:    pass2: Optimisation level is" \
 					          "now $OPTIMISE"
 					;;
-				-R)	if [[ "$tool" != "as" ]]; then
+				-pthread)
+					# FIXME for x11-libs/pixman
+					replacement="-lpthread"
+					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					          "transformed to <$replacement> and appended"
+					append=( "${append[@]}" "${replacement}" )
+					unset replacement argument
+					
+					;;
+				-R)
+					if [[ "$tool" != "as" ]]; then
 						ifverbose "WARNING: pass2: GNU option \"$argument\" dropped"
 						unset argument
 					fi
@@ -1339,20 +1376,34 @@ function main() {
 						unset argument
 					fi
 					;;
+				-export-symbols)
+					replacement="-exports_file"
+					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					          "transformed to <$replacement>"
+					argument="$replacement"
+					unset replacement
+					;;
+				-fopenmp)
+					replacement="-mp"
+					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
+					          "transformed to <$replacement>"
+					argument="$replacement"
+					unset replacement
+					;;
 				-fpic|-fPIC)
 					ifverbose "WARNING: pass2: -KPIC is default on" \
 					          "IRIX, GNU option \"$argument\" dropped"
 					unset argument
 					continue
 					;;
-				-fsigned-char)
+				-fsigned-char|-qchars=signed)
 					replacement="-signed"
 					ifverbose "WARNING: pass2: GNU option \"$argument\"" \
 					          "transformed to <$replacement>"
 					argument="$replacement"
 					unset replacement
 					;;
-				-funsigned-char)
+				-funsigned-char|-qchars=unsigned)
 					ifverbose "WARNING: pass2: unsigned char is default on" \
 					          "IRIX, GNU option \"$argument\" dropped"
 					unset argument
@@ -1437,20 +1488,9 @@ function main() {
 						# far as I can tell...
 						# -MMD is the same as -MD, except only user header files
 						# are referenced.  We'll just have to hope with this one...
-
-						#-MD)
-						#	# Don't use $replacement here, as there are multiple
-						#	# elements
-						#	ifverbose "WARNING: pass2: -MD does not exist on" \
-						#	          "IRIX, \"$argument\" changed to <-M -MDupdate>"
-						#	ifverbose "WARNING: pass2: Output is approximated!"
-						#	output=( "${output[@]}" "-M" "-MDupdate" )
-						#	unset argument
-						#	continue
-						#	;;
-						-MD|-W*([fbalR])p*([fbalR]),?(*,)-MD?(,*))
-							replacement="${argument/-MD/-MDupdate}"
-							ifverbose "WARNING: pass2: -MD does not exist on" \
+						-MM|-W*([fbalR])p*([fbalR]),?(*,)-MM?(,*))
+							replacement="${argument/-MM/-M}"
+							ifverbose "WARNING: pass2: -MM does not exist on" \
 							          "IRIX, \"$argument\" changed to <$replacement>"
 							ifverbose "WARNING: pass2: Output may be approximated!"
 							argument="$replacement"
@@ -1461,20 +1501,15 @@ function main() {
 							          "IRIX, \"$argument\" changed to <$replacement>"
 							argument="$replacement"
 							;;
-						-MMD|-W*([fbalR])p*([fbalR]),?(*,)-MMD?(,*))
-							replacement="${argument/-MMD/-MDupdate}"
-							ifverbose "WARNING: pass2: -MMD does not exist on" \
-							          "IRIX, \"$argument\" changed to <$replacement>"
-							ifverbose "WARNING: pass2: Output may be approximated!"
-							argument="$replacement"
+						-MG|-W*([fbalR])p*([fbalR]),-MG)
+							ifverbose "WARNING: pass2: -MG does not exist on" \
+							          "IRIX, GNU option \"$argument\" dropped"
+							unset argument
+							continue
 							;;
-						-MT|-W*([fbalR])p*([fbalR]),?(*,)-MT?(,*))
-							replacement="${argument/-MT/-MDtarget}"
-							# Although not documented, -MDtarget is a valid
-							# cc/CC option!
-							# (it is documented for cpp, but cpp itself is supposed
-							# to be for legacy non-ANSI usage only...)
-							ifverbose "WARNING: pass2: -MT does not exist on" \
+						-W*([fbalR])p*([fbalR]),*,-MG?(,*))
+							replacement="${argument/,-MG/}"
+							ifverbose "WARNING: pass2: -MP does not exist on" \
 							          "IRIX, \"$argument\" changed to <$replacement>"
 							argument="$replacement"
 							;;
@@ -1489,6 +1524,40 @@ function main() {
 							replacement="${argument/,-MP/}"
 							ifverbose "WARNING: pass2: -MP does not exist on" \
 							          "IRIX, \"$argument\" changed to <$replacement>"
+							argument="$replacement"
+							;;
+						-MT|-W*([fbalR])p*([fbalR]),?(*,)-MT?(,*))
+							replacement="${argument/-MT/-MDtarget}"
+							# Although not documented, -MDtarget is a valid
+							# cc/CC option!
+							# (it is documented for cpp, but cpp itself is supposed
+							# to be for legacy non-ANSI usage only...)
+							ifverbose "WARNING: pass2: -MT does not exist on" \
+							          "IRIX, \"$argument\" changed to <$replacement>"
+							argument="$replacement"
+							;;
+						-MQ|-W*([fbalR])p*([fbalR]),?(*,)-MQ?(,*))
+							replacement="${argument/-MQ/-MDtarget}"
+							# As above, except that -MQ is supposed to quote
+							# characters which have special meaning.
+							# We can but hope...
+							ifverbose "WARNING: pass2: -MQ does not exist on" \
+							          "IRIX, \"$argument\" changed to <$replacement>"
+							ifverbose "WARNING: pass2: Output may be approximated!"
+							argument="$replacement"
+							;;
+						-MD|-W*([fbalR])p*([fbalR]),?(*,)-MD?(,*))
+							replacement="${argument/-MD/-MDupdate}"
+							ifverbose "WARNING: pass2: -MD does not exist on" \
+							          "IRIX, \"$argument\" changed to <$replacement>"
+							ifverbose "WARNING: pass2: Output may be approximated!"
+							argument="$replacement"
+							;;
+						-MMD|-W*([fbalR])p*([fbalR]),?(*,)-MMD?(,*))
+							replacement="${argument/-MMD/-MDupdate}"
+							ifverbose "WARNING: pass2: -MMD does not exist on" \
+							          "IRIX, \"$argument\" changed to <$replacement>"
+							ifverbose "WARNING: pass2: Output may be approximated!"
 							argument="$replacement"
 							;;
 					esac
@@ -1621,6 +1690,8 @@ function main() {
 			[[ -n "$argument" ]] && output=( "${output[@]}" "${argument}" )
 			unset replacement
 		done
+		[[ -n "$append" ]] && output=( "${output[@]}" "${append}" )
+		unset append
 
 		# Common options with different meanings:
 		#  -x <c|c++|f|f90|assembler|object|none>
@@ -1685,8 +1756,8 @@ function main() {
 						# be the case if cpp is invoked directly.
 						# Likewise, we assume that cc really wants C99
 						# compliance.
-						# If this causes problems, the non-standard option
-						# "-noc99" will disable this feature.
+						# If this causes problems, the non-standard option "-noc99"
+						# will disable this feature.
 						cpp|cc|c99)
 							(( injectattr )) && options="-D__attribute__(x)=\"\" $options"
 							options="$cstandard $options"
@@ -1916,7 +1987,6 @@ function main() {
 						if [[ "$argument" != "-l" ]]; then
 							ifverbose "NOTICE:  pass3: Option <$argument> will"	   \
 							          "always be passed ..."
-							pass=1
 							quiet=1
 						fi
 						;;
@@ -1977,7 +2047,8 @@ function main() {
 								done
 								if (( filtered )); then
 									ifverbose "NOTICE:  pass3: Passing"		   \
-								              "duplicate option \"$argument\""
+								              "non-native duplicate"		   \
+								              "option \"$argument\""
 								else
 									ifverbose "WARNING: pass3: Dropping"	   \
 								              "duplicate option \"$argument\""
@@ -2005,18 +2076,44 @@ function main() {
 					quiet=0
 				fi
 			else
-				case $argument in
-					-*)
-						ifverbose "NOTICE:  pass3: Passing all remaining,"	   \
-						          "option <$argument>"
-						;;
-					*)
-						[[ -n "$argument" ]] &&								   \
+				# '--' is only actually valid when $tool==c89 or $tool==cc
+				# and '_XPG' is defined...
+				if [[ "$argument" == "--" ]]; then
+					case "$tool" in
+						c89)
+							:
+							;;
+						cc)
+							if [[ -z "$_XPG" ]]; then
+								unset argument
+							fi
+							;;
+						*)
+							unset argument
+							;;
+					esac
+				fi
+
+				if [[ -n "$argument" ]]; then
+					case $argument in
+						-*)
+							ifverbose "NOTICE:  pass3: Passing all remaining," \
+							          "option <$argument>"
+							;;
+						*)
 							ifverbose "NOTICE:  pass3: Passing all remaining," \
 							          "argument <$argument>"
 						;;
-				esac
-				[[ -n "$argument" ]] && output=( "${output[@]}" "$argument" )
+					esac
+					output=( "${output[@]}" "$argument" )
+				else
+					ifverbose "WARNING: pass3: Option \"--\" is only valid for"\
+					          "XPG4/c89"
+				fi
+				# Actually, continue to process further arguments afterall...
+				# introducing new semantics to the meaning of "--" (which is
+				# usually ignored in any case) isn't helpful!
+				skip=0
 			fi
 		done
 
